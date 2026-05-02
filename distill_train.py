@@ -119,7 +119,7 @@ def main():
         per_device_eval_batch_size=4,
         gradient_accumulation_steps=8,
         learning_rate=2e-4,
-        num_train_epochs=3,
+        num_train_epochs=2,
         lr_scheduler_type="cosine",
         warmup_steps=100,
         logging_steps=20,

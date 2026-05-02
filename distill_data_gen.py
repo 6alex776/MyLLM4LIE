@@ -1,8 +1,12 @@
+# 蒸馏数据生成
+
 import json
 import os
 import time
 from pathlib import Path
 from typing import Dict, Optional
+from multiprocessing import Pool, cpu_count
+from tqdm import tqdm
 
 from datasets import concatenate_datasets, load_dataset
 from openai import OpenAI
@@ -17,11 +21,11 @@ FAILED_PATH = Path("./artifacts/failed_samples.jsonl")  # 失败样本记录
 
 # 保留任务：精简样本
 TASK_SAMPLE_LIMITS = {
-    "polish": 1200,  # 核心：文本润色
-    "expand": 600,  # 保留：文本扩写
-    "translate": 1200,  # 核心：中英翻译
+    "polish": 1800,  # 核心：文本润色
+    "expand": 1500,  # 核心：文本扩写
+    "translate": 1800,  # 核心：中英翻译
     "general": 600,  # 保留：通用指令
-    "summarize": 600,  # 保留：总结缩写
+    "summarize": 1000,  # 保留：总结缩写
 }
 
 SYSTEM_PROMPTS = {
@@ -29,26 +33,32 @@ SYSTEM_PROMPTS = {
     "translate": "你是专业的中英互译助手，只输出翻译结果，不要解释。",
     "expand": "你是专业的中文扩写助手，保留原意适度扩写，只输出结果。",
     "summarize": "你是专业的中文总结助手，精炼核心内容，只输出结果。",
-    "general": "你是专业的文本处理助手，按要求完成任务，只输出结果。",
+    "general": "你是专业的文本处理助手，按要求完成指定的任务，只输出结果。",
 }
 
 # 连接本地Qwen教师模型
-client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="none")
+client = None  # 延迟初始化，避免多进程问题
+
+
+def init_worker():
+    """初始化工作进程（每个进程独立创建客户端）"""
+    global client
+    client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="none")
 
 
 def load_instruction_pool():
     """加载原始指令池（无变化，仅作为基础数据）"""
     # 1. 通用任务 (保留，少量)
-    belle = load_dataset("BelleGroup/train_0.5M_CN", split="train[:1000]").map(
+    belle = load_dataset("BelleGroup/train_0.5M_CN", split="train[:1200]").map(
         lambda x: {
             "task_type": "general",
             "instruction": x["instruction"].strip(),
             "input_text": x["instruction"].strip(),
         }
-    ).select(range(min(TASK_SAMPLE_LIMITS["general"], 1000)))  # 提前限制最大长度
+    ).select(range(min(TASK_SAMPLE_LIMITS["general"], 1000)))
 
     # 2. 总结任务 (保留，少量)
-    adgen = load_dataset("HasturOfficial/adgen", split="train[:1000]").map(
+    adgen = load_dataset("HasturOfficial/adgen", split="train[:3000]").map(
         lambda x: {
             "task_type": "summarize",
             "instruction": "请总结下面的内容",
@@ -56,30 +66,55 @@ def load_instruction_pool():
         }
     ).select(range(min(TASK_SAMPLE_LIMITS["summarize"], 1000)))
 
-    # 3. 核心：润色任务
-    polish = load_dataset("yuhuanstudio/wikipedia-pretrain-zh", split="train[:2000]").map(
+    # 3. 核心：润色任务（混合高质量数据集）
+    # 3.1 Belle 通用指令（适合润色）
+    polish_belle = load_dataset("BelleGroup/train_0.5M_CN", split="train[:1500]").map(
+        lambda x: {
+            "task_type": "polish",
+            "instruction": "请润色这句话，让它更通顺自然",
+            "input_text": x["instruction"][:100].strip(),
+        }
+    ).select(range(min(TASK_SAMPLE_LIMITS["polish"] // 2, 1000)))
+    
+    # 3.2 维基百科数据（补充润色）
+    polish_wiki = load_dataset("yuhuanstudio/wikipedia-pretrain-zh", split="train[:2000]").map(
         lambda x: {
             "task_type": "polish",
             "instruction": "请润色这句话，让它更通顺自然",
             "input_text": (x["title"] + " " + x["text"])[:100].strip(),
         }
-    ).select(range(min(TASK_SAMPLE_LIMITS["polish"], 2000)))
+    ).select(range(min(TASK_SAMPLE_LIMITS["polish"] // 2, 1000)))
+    
+    # 合并润色数据集
+    polish = concatenate_datasets([polish_belle, polish_wiki])
 
-    # 4. 核心：扩写任务
-    expand = load_dataset("yuhuanstudio/wikipedia-pretrain-zh", split="train[1000:2000]").map(
+    # 4. 核心：扩写任务（混合数据集）
+    # 4.1 Adgen 广告生成（适合扩写训练）
+    expand_adgen = load_dataset("HasturOfficial/adgen", split="train[:1500]").map(
+        lambda x: {
+            "task_type": "expand",
+            "instruction": "请扩写下面的内容，让它更丰富完整",
+            "input_text": x["content"][:80].strip(),
+        }
+    ).select(range(min(TASK_SAMPLE_LIMITS["expand"] // 2, 800)))
+    
+    # 4.2 维基百科数据（补充扩写）
+    expand_wiki = load_dataset("yuhuanstudio/wikipedia-pretrain-zh", split="train[1500:3000]").map(
         lambda x: {
             "task_type": "expand",
             "instruction": "请扩写下面的内容，让它更丰富完整",
             "input_text": (x["title"] + " " + x["text"])[:80].strip(),
         }
-    ).select(range(min(TASK_SAMPLE_LIMITS["expand"], 1000)))
+    ).select(range(min(TASK_SAMPLE_LIMITS["expand"] // 2, 800)))
+    
+    # 合并扩写数据集
+    expand = concatenate_datasets([expand_adgen, expand_wiki])
 
     # 5. 核心：翻译任务
-    translate = load_dataset("opus100", "en-zh", split="train[:2000]").map(
+    translate = load_dataset("opus100", "en-zh", split="train[:4000]").map(
         lambda x, i: {
             "task_type": "translate",
             "instruction": "请进行中英互译，只输出翻译结果",
-            # 交替使用中→英/英→中，保证翻译任务多样性
             "input_text": x["translation"]["zh"] if i % 2 == 0 else x["translation"]["en"],
         },
         with_indices=True
@@ -102,11 +137,9 @@ def load_progress() -> Dict[str, int]:
     try:
         with open(PROGRESS_PATH, "r", encoding="utf-8") as f:
             progress = json.load(f)
-        # 确保进度字典包含所有任务类型，且不超过配置上限
         for task in TASK_SAMPLE_LIMITS.keys():
             if task not in progress:
                 progress[task] = 0
-            # 防止进度值超过配置上限
             progress[task] = min(progress[task], TASK_SAMPLE_LIMITS[task])
         return progress
     except Exception as e:
@@ -120,7 +153,6 @@ def save_progress(progress: Dict[str, int]):
     try:
         with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(progress, f, ensure_ascii=False, indent=2)
-        # 原子替换，防止写入中断导致文件损坏
         temp_path.replace(PROGRESS_PATH)
     except Exception as e:
         print(f"保存进度失败：{e}")
@@ -128,6 +160,7 @@ def save_progress(progress: Dict[str, int]):
 
 def query_teacher(task_type, instruction, input_text, retry=2):
     """调用教师模型，增加重试机制"""
+    global client
     for attempt in range(retry + 1):
         try:
             resp = client.chat.completions.create(
@@ -144,19 +177,21 @@ def query_teacher(task_type, instruction, input_text, retry=2):
         except Exception as e:
             print(f"调用教师模型失败（第{attempt + 1}次重试）：{e}")
             if attempt < retry:
-                time.sleep(1)  # 重试前等待1秒
+                time.sleep(1)
     return None
 
 
-def write_sample_to_file(sample: dict, file_path: Path):
-    """追加写入单条样本到文件（避免内存缓存所有数据）"""
+def write_samples_batch(samples: list, file_path: Path):
+    """分批写入样本（批量写入，提高效率）"""
     file_path.parent.mkdir(exist_ok=True)
     with open(file_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(sample, ensure_ascii=False) + "\n")
+        for sample in samples:
+            f.write(json.dumps(sample, ensure_ascii=False) + "\n")
 
 
-def process_single_sample(sample: dict) -> Optional[dict]:
-    """处理单条样本，返回结果或None（失败）"""
+def process_sample_wrapper(args):
+    """多进程包装函数，处理单条样本"""
+    sample = args
     try:
         output = query_teacher(
             sample["task_type"],
@@ -164,7 +199,12 @@ def process_single_sample(sample: dict) -> Optional[dict]:
             sample["input_text"]
         )
         if not output:
-            return None
+            return None, {
+                "error": "教师模型返回空",
+                "task_type": sample["task_type"],
+                "instruction": sample["instruction"],
+                "input_text": sample["input_text"]
+            }
 
         result = {
             "system": SYSTEM_PROMPTS[sample["task_type"]],
@@ -172,24 +212,18 @@ def process_single_sample(sample: dict) -> Optional[dict]:
             "input": sample["input_text"],
             "output": output
         }
-        # 实时写入结果文件
-        write_sample_to_file(result, OUTPUT_PATH)
-        return result
+        return result, None
     except Exception as e:
-        print(f"样本处理失败：{e}")
-        # 记录失败样本
-        write_sample_to_file({
+        error_info = {
             "error": str(e),
             "task_type": sample["task_type"],
             "instruction": sample["instruction"],
             "input_text": sample["input_text"]
-        }, FAILED_PATH)
-        return None
+        }
+        return None, error_info
 
 
 def main():
-    import concurrent.futures
-
     # 1. 初始化路径和进度
     progress = load_progress()
     total_completed = sum(progress.values())
@@ -208,71 +242,67 @@ def main():
         for task in TASK_SAMPLE_LIMITS.keys()
     }
 
-    # 3. 配置并发（可根据硬件调整）
-    MAX_WORKERS = 1
+    # 3. 配置多进程（根据CPU核心数自动设置）
+    MAX_WORKERS = min(4, cpu_count() // 2)
+    print(f"\n使用 {MAX_WORKERS} 个进程并行处理")
+
+    # 4. 按任务类型分批处理
     completed = total_completed
 
-    # 4. 按任务类型分批处理（跳过已完成的样本）
     for task_type, task_dataset in task_groups.items():
-        # 关键修复：取配置上限和实际数据集长度的最小值
         task_config_limit = TASK_SAMPLE_LIMITS[task_type]
         task_actual_length = len(task_dataset)
         task_total = min(task_config_limit, task_actual_length)
         task_done = progress[task_type]
 
-        # 防止已完成进度超过实际可处理的样本数
         if task_done >= task_total:
-            print(f"\n【{task_type}】任务已完成（实际可处理{task_total}条），跳过")
+            print(f"\n【{task_type}】任务已完成，跳过")
             continue
 
-        # 打印数据集实际长度，方便调试
-        print(f"\n【{task_type}】任务 - 配置上限：{task_config_limit} | 实际可用：{task_actual_length} | 需处理：{task_total - task_done}")
+        print(f"\n【{task_type}】任务 - 需处理：{task_total - task_done}条")
 
-        # 切片：只处理剩余未完成的样本（确保不越界）
+        # 切片：只处理剩余未完成的样本
         end_idx = min(task_done + (task_total - task_done), task_actual_length)
-        remaining_dataset = task_dataset.select(range(task_done, end_idx))
-        print(f"开始处理【{task_type}】任务，剩余样本数：{len(remaining_dataset)}")
+        remaining_samples = [dict(sample) for sample in task_dataset.select(range(task_done, end_idx))]
 
-        # 并发处理剩余样本
-        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            futures = [executor.submit(process_single_sample, sample)
-                       for sample in remaining_dataset]
+        # 多进程处理
+        with Pool(processes=MAX_WORKERS, initializer=init_worker) as pool:
+            results = list(tqdm(
+                pool.imap(process_sample_wrapper, remaining_samples),
+                total=len(remaining_samples),
+                desc=f"Processing {task_type}"
+            ))
 
-            for idx, future in enumerate(concurrent.futures.as_completed(futures)):
-                result = future.result()
-                if result:
-                    # 更新进度（每处理1条更新1次，保证断点准确性）
-                    new_progress = task_done + idx + 1
-                    # 确保进度不超过实际可处理的样本数
-                    progress[task_type] = min(new_progress, task_total)
-                    completed += 1
+        # 分批写入结果
+        batch_size = 100
+        success_results = [r[0] for r in results if r[0] is not None]
+        failed_results = [r[1] for r in results if r[1] is not None]
 
-                    # 每10条保存一次进度（减少IO）
-                    if idx % 10 == 0:
-                        save_progress(progress)
+        # 写入成功样本（分批）
+        for i in range(0, len(success_results), batch_size):
+            batch = success_results[i:i+batch_size]
+            write_samples_batch(batch, OUTPUT_PATH)
 
-                    # 打印进度
-                    if completed % 100 == 0:
-                        print(f"全局进度：{completed}/{total_samples}")
+        # 写入失败样本（分批）
+        if failed_results:
+            for i in range(0, len(failed_results), batch_size):
+                batch = failed_results[i:i+batch_size]
+                write_samples_batch(batch, FAILED_PATH)
 
-        # 任务完成后强制保存进度
+        # 更新进度
+        progress[task_type] = min(task_done + len(success_results), task_total)
+        completed += len(success_results)
         save_progress(progress)
-        print(f"【{task_type}】任务处理完成，当前进度：{progress[task_type]}/{task_total}")
+
+        print(f"【{task_type}】任务完成，成功{len(success_results)}条，失败{len(failed_results)}条")
 
     # 5. 最终统计
     print("\n=== 处理完成 ===")
     final_progress = load_progress()
     total_success = sum(final_progress.values())
-    # 重新计算实际总样本数（基于各任务的实际可处理数量）
-    actual_total_samples = sum(
-        min(TASK_SAMPLE_LIMITS[task], len(task_groups[task]))
-        for task in TASK_SAMPLE_LIMITS.keys()
-    )
-    print(f"最终完成样本数：{total_success}/{actual_total_samples}（配置总样本数：{total_samples}）")
+    print(f"最终完成样本数：{total_success}/{total_samples}")
     print(f"结果文件路径：{OUTPUT_PATH}")
-    print(f"失败样本路径：{FAILED_PATH if FAILED_PATH.exists() else '无'}")
 
-    # 验证结果文件行数
     if OUTPUT_PATH.exists():
         with open(OUTPUT_PATH, "r", encoding="utf-8") as f:
             line_count = sum(1 for _ in f)
