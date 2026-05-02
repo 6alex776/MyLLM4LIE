@@ -1,0 +1,93 @@
+# ======================================
+# 1. Python 通用忽略项
+# ======================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.pytest_cache/
+.coverage
+*.xml
+
+# 虚拟环境（conda/venv）
+venv/
+env/
+.venv/
+.env/
+conda_env/
+*.env
+.env.*
+
+# ======================================
+# 2. 机器学习/LLM 项目核心忽略项（重点！）
+# ======================================
+# 你的 artifacts 目录（模型、数据、日志全在这，体积极大，必须忽略）
+artifacts/
+
+# 模型权重/检查点文件（防止大文件提交）
+*.pt
+*.pth
+*.bin
+*.ckpt
+*.safetensors
+*.gguf
+*.onnx
+*.pkl
+*.pickle
+
+# 训练数据/中间文件
+*.h5
+*.npy
+*.npz
+*.csv
+*.jsonl
+*.txt.tmp
+
+# 训练日志/可视化文件
+logs/
+runs/
+tensorboard/
+wandb/
+
+# ======================================
+# 3. IDE/编辑器配置文件
+# ======================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+*.tmp
+
+# ======================================
+# 4. 系统临时文件
+# ======================================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ======================================
+# 5. 其他临时文件
+# ======================================
+*.log
+*.out
+*.err
+.ipynb_checkpoints/
