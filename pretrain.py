@@ -66,10 +66,10 @@ def main():
 
     training_args = TrainingArguments(
         output_dir=OUTPUT_DIR,
-        per_device_train_batch_size=4,  # 适配8GB显存
-        per_device_eval_batch_size=4,
-        gradient_accumulation_steps=8,  # 保持有效batch=32
-        learning_rate=1e-4,  # 标准学习率
+        per_device_train_batch_size=12,#4,  # 适配8GB显存
+        per_device_eval_batch_size=8,#4,
+        gradient_accumulation_steps=4,#8,  # 保持有效batch=32
+        learning_rate=2e-4,#1e-4,  # 标准学习率
         num_train_epochs=3,
         lr_scheduler_type="cosine",
         warmup_steps=200,
@@ -80,8 +80,8 @@ def main():
         eval_strategy="steps",
         save_total_limit=2,
         weight_decay=0.1,
-        fp16=torch.cuda.is_available(),
-        bf16=False,
+        fp16=False,#torch.cuda.is_available(),
+        bf16=True,#False,
         report_to="none",
         dataloader_num_workers=min(4, os.cpu_count() // 2),  # 启用多线程数据加载
         remove_unused_columns=False,
