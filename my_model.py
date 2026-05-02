@@ -7,6 +7,12 @@ import torch.nn.functional as F
 from transformers import AutoTokenizer, GenerationMixin, PreTrainedModel, PretrainedConfig
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 
+try:
+    from flash_attn import flash_attn_qkvpacked_func
+    FLASH_ATTENTION_AVAILABLE = True
+except ImportError:
+    FLASH_ATTENTION_AVAILABLE = False
+
 
 class LLMIEConfig(PretrainedConfig):
     model_type = "llmie_student"
@@ -138,22 +144,34 @@ class LLMIESelfAttention(nn.Module):
         cos, sin = self.rotary_emb(position_ids)
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
-        attn_scores = torch.matmul(query_states, key_states.transpose(-2, -1))
-        attn_scores = attn_scores / (self.head_dim ** 0.5)
+        # 使用 Flash Attention 加速训练（仅训练模式，推理时使用标准实现）
+        if FLASH_ATTENTION_AVAILABLE and self.training:
+            # Flash Attention 要求输入格式为 (batch_size, seq_len, 3 * hidden_size)
+            qkv = torch.cat([query_states, key_states, value_states], dim=1)
+            qkv = qkv.transpose(1, 2).contiguous()  # (batch, seq_len, 3*num_heads, head_dim)
+            attn_output = flash_attn_qkvpacked_func(
+                qkv, causal=True, dropout_p=0.0
+            )
+            attn_output = attn_output.view(batch_size, seq_len, self.hidden_size)
+        else:
+            # 标准 Attention 实现（兼容推理和不支持 Flash Attention 的环境）
+            attn_scores = torch.matmul(query_states, key_states.transpose(-2, -1))
+            attn_scores = attn_scores / (self.head_dim ** 0.5)
 
-        causal_mask = torch.triu(
-            torch.full((seq_len, seq_len), torch.finfo(attn_scores.dtype).min, device=hidden_states.device),
-            diagonal=1,
-        )
-        attn_scores = attn_scores + causal_mask
+            causal_mask = torch.triu(
+                torch.full((seq_len, seq_len), torch.finfo(attn_scores.dtype).min, device=hidden_states.device),
+                diagonal=1,
+            )
+            attn_scores = attn_scores + causal_mask
 
-        if attention_mask is not None:
-            expanded_mask = attention_mask[:, None, None, :].to(attn_scores.dtype)
-            attn_scores = attn_scores.masked_fill(expanded_mask == 0, torch.finfo(attn_scores.dtype).min)
+            if attention_mask is not None:
+                expanded_mask = attention_mask[:, None, None, :].to(attn_scores.dtype)
+                attn_scores = attn_scores.masked_fill(expanded_mask == 0, torch.finfo(attn_scores.dtype).min)
 
-        attn_probs = F.softmax(attn_scores, dim=-1, dtype=torch.float32).to(query_states.dtype)
-        attn_output = torch.matmul(attn_probs, value_states)
-        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_size)
+            attn_probs = F.softmax(attn_scores, dim=-1, dtype=torch.float32).to(query_states.dtype)
+            attn_output = torch.matmul(attn_probs, value_states)
+            attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.hidden_size)
+
         return self.o_proj(attn_output)
 
 
