@@ -90,7 +90,7 @@ def load_instruction_pool():
 
     # 4. 核心：扩写任务（混合数据集）
     # 4.1 Adgen 广告生成（适合扩写训练）
-    expand_adgen = load_dataset("HasturOfficial/adgen", split="train[:1500]").map(
+    expand_adgen = load_dataset("HasturOfficial/adgen", split="train[:300]").map(
         lambda x: {
             "task_type": "expand",
             "instruction": "请扩写下面的内容，让它更丰富完整",
