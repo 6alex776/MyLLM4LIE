@@ -8,6 +8,11 @@ os.environ["HF_TOKEN"] = "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"
 from pathlib import Path
 
 import torch
+
+# RTX 4090 (Ampere) 加速设置
+torch.backends.cuda.matmul.allow_tf32 = True  # 启用 TF32 矩阵运算加速
+torch.backends.cudnn.allow_tf32 = True        # 启用 cuDNN TF32 加速
+
 from datasets import load_from_disk
 from transformers import Trainer, TrainingArguments
 
@@ -51,13 +56,18 @@ def main():
     
     if latest_checkpoint is not None:
         print(f"找到checkpoint，从 {latest_checkpoint} 恢复训练")
-        model = LLMIEForCausalLM.from_pretrained(latest_checkpoint)
-    else:
+        model = LLMIEForCausalLM.from_pretrained(
+            latest_checkpoint,
+            ignore_mismatched_sizes=True,  # 忽略权重形状不匹配（如 tie_word_embeddings 导致的 lm_head 缺失）
+        )
+    
+    if latest_checkpoint is None:
         print("未找到有效checkpoint，从头开始训练")
         config = build_student_config(tokenizer)
         model = LLMIEForCausalLM(config)
     
-    model.gradient_checkpointing_enable()
+    # 关闭梯度检查点以提速（显存有余量 14G/24G，关掉可提速 20-30%）
+    # model.gradient_checkpointing_enable()
 
     stats = get_model_stats(model)
     print(f"Loaded tokenizer from {tokenizer_source}")
@@ -66,24 +76,25 @@ def main():
 
     training_args = TrainingArguments(
         output_dir=OUTPUT_DIR,
-        per_device_train_batch_size=12,#4,  # 适配8GB显存
-        per_device_eval_batch_size=8,#4,
-        gradient_accumulation_steps=4,#8,  # 保持有效batch=32
-        learning_rate=2e-4,#1e-4,  # 标准学习率
+        per_device_train_batch_size=16,        # 加大到16（显存有余量）
+        per_device_eval_batch_size=8,
+        gradient_accumulation_steps=3,          # 16×3=48，与原来12×4=48等价
+        learning_rate=2e-4,
         num_train_epochs=3,
         lr_scheduler_type="cosine",
         warmup_steps=200,
         logging_steps=100,
-        eval_steps=5000,  # 减少评估频率，加快训练
+        eval_steps=5000,
         save_steps=2000,
         save_strategy="steps",
         eval_strategy="steps",
         save_total_limit=2,
         weight_decay=0.1,
-        fp16=False,#torch.cuda.is_available(),
-        bf16=True,#False,
+        fp16=False,
+        bf16=True,
         report_to="none",
-        dataloader_num_workers=min(4, os.cpu_count() // 2),  # 启用多线程数据加载
+        dataloader_num_workers=min(4, os.cpu_count() // 2),
+        dataloader_prefetch_factor=2,           # 预取数据，减少GPU等待
         remove_unused_columns=False,
     )
 

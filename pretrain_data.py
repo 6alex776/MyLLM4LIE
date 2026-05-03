@@ -5,8 +5,12 @@ import os
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"  # 关闭Windows符号链接警告
 os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"  # 关闭HF未登录警告
 
-# 开启高速下载
-os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+# 开启高速下载（仅在 hf_transfer 已安装时启用，否则自动回退普通下载）
+try:
+    import hf_transfer  # noqa: F401
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+except ImportError:
+    pass  # hf_transfer 未安装，使用 huggingface_hub 默认下载方式
 
 from datasets import Dataset, concatenate_datasets, load_dataset
 
