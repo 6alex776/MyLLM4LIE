@@ -7,7 +7,7 @@ from transformers import AutoTokenizer
 
 from my_model import LLMIEForCausalLM  # 自定义模型必须直接导入
 
-MODEL_PATH = "./artifacts/base_model"
+MODEL_PATH = "./artifacts/sft_model"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -31,9 +31,11 @@ def main():
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=50,
+                max_new_tokens=80,
                 temperature=0.8,
                 top_p=0.9,
+                top_k=50,
+                repetition_penalty=1.15,       # 抑制重复
                 do_sample=True,
                 eos_token_id=tokenizer.eos_token_id,
                 pad_token_id=tokenizer.pad_token_id,
@@ -42,7 +44,7 @@ def main():
         answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
         print(f"\n{'='*60}")
         print(f"输入: {prompt}")
-        print(f"互译: {answer}")
+        print(f"润色: {answer}")
 
 
 if __name__ == "__main__":
