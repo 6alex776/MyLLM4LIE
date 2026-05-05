@@ -6,23 +6,39 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 from pathlib import Path
 
 import torch
+
+# 4090 加速设置
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
 from datasets import load_dataset
 from peft import LoraConfig, get_peft_model, TaskType
 from transformers import Trainer, TrainingArguments, DataCollatorForSeq2Seq
 
 from my_model import LLMIEForCausalLM, get_model_stats  # 自定义底座模型
 from tokenizer_utils import load_tokenizer
+from muon_optimizer import create_optimizer
 
 
 BASE_MODEL_DIR = "./artifacts/base_model"          # 预训练底座模型
 SFT_DATA_PATH = "./artifacts/distill_dataset.jsonl"  # SFT 数据集（JSONL 格式）
 OUTPUT_DIR = "./artifacts/sft_runs"                 # 训练中间 checkpoint
 FINAL_MODEL_DIR = "./artifacts/sft_model"            # 最终微调模型
-MAX_SEQ_LEN = 512                                    # 序列截断长度
+MAX_SEQ_LEN = 768                                    # ChatGLM3 中文编码更长，放宽截断
+
+# ========== 优化器配置 ==========
+# 设置为 True 使用 Muon（推荐用于 200M 小模型），False 使用 AdamW
+USE_MUON = True
+# Muon 学习率：SFT 阶段可以比预训练稍小
+MUON_LR = 2e-4
+# AdamW 学习率（用于 1D 参数，或当 USE_MUON=False 时）
+ADAMW_LR = 1e-4
+# 权重衰减
+WEIGHT_DECAY = 0.01
 
 
 def build_chat_text(system_prompt: str, instruction: str, user_input: str, assistant_output: str) -> str:
-    """构建 Qwen 风格聊天格式（与预训练底座相同）"""
+    """构建聊天格式（与预训练底座兼容）"""
     return (
         f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
         f"<|im_start|>user\n{instruction}\n\n{user_input}<|im_end|>\n"
@@ -99,15 +115,16 @@ def main():
     # 2. 加载自训练底座模型
     print(f"\n加载底座模型: {BASE_MODEL_DIR}")
     model = LLMIEForCausalLM.from_pretrained(BASE_MODEL_DIR)
-    # 118M 小模型不需要梯度检查点，关掉可大幅提速（从 ~26s/it 降到 ~1-2s/it）
+    # ~191M 底座模型不需要梯度检查点
+    # model.gradient_checkpointing_enable()
 
     stats = get_model_stats(model)
     print(f"底座模型参数量: {stats.total_params / 1e6:.2f}M")
 
-    # 3. 配置 LoRA（适配 118M 小模型）
+    # 3. 配置 LoRA（适配 ~191M 模型）
     lora_config = LoraConfig(
-        r=8,                # 低秩维度，小模型不需要太大
-        lora_alpha=16,      # 缩放系数，通常为 r 的 2 倍
+        r=12,               # ~191M 模型适当增大秩
+        lora_alpha=24,      # 缩放系数，通常为 r 的 2 倍
         lora_dropout=0.05,  # 轻微 dropout 防止过拟合
         bias="none",        # 不训练 bias
         task_type=TaskType.CAUSAL_LM,
@@ -120,13 +137,13 @@ def main():
     dataset = preprocess_dataset(tokenizer)
     print(f"训练集: {len(dataset['train'])} 条, 验证集: {len(dataset['test'])} 条")
 
-    # 5. 训练参数
+    # 5. 训练参数（4090 24GB）
     training_args = TrainingArguments(
         output_dir=OUTPUT_DIR,
-        per_device_train_batch_size=16,#4,        # 适配 8GB 显存 + 151K 大词表
-        per_device_eval_batch_size=8,#4,
-        gradient_accumulation_steps=2,#8,        # 4×8=32 有效 batch
-        learning_rate=2e-4,
+        per_device_train_batch_size=16,       # 4090 绰绰有余
+        per_device_eval_batch_size=8,
+        gradient_accumulation_steps=2,        # 16×2=32 有效 batch
+        learning_rate=ADAMW_LR if not USE_MUON else MUON_LR,
         num_train_epochs=5,
         lr_scheduler_type="cosine",
         warmup_steps=50,
@@ -136,12 +153,22 @@ def main():
         save_strategy="steps",
         eval_strategy="steps",
         save_total_limit=2,
-        weight_decay=0.01,
+        weight_decay=WEIGHT_DECAY,
         fp16=False,
-        bf16=torch.cuda.is_available(),       # bf16 将 logits 从 4.6GB 降到 2.3GB
+        bf16=True,
         report_to="none",
-        dataloader_num_workers=0,
+        dataloader_num_workers=4,             # Linux 服务器可用多进程
         remove_unused_columns=False,
+    )
+
+    # 创建自定义优化器（Muon 或 AdamW）
+    # 注意：LoRA 参数中，A/B 矩阵是 2D 的，会用 Muon；bias 等 1D 参数用 AdamW
+    optimizer = create_optimizer(
+        model,
+        use_muon=USE_MUON,
+        muon_lr=MUON_LR,
+        adamw_lr=ADAMW_LR,
+        weight_decay=WEIGHT_DECAY,
     )
 
     # 6. 训练（DataCollatorForSeq2Seq 动态 padding，每 batch 只 pad 到该 batch 最长长度）
@@ -156,6 +183,7 @@ def main():
         train_dataset=dataset["train"],
         eval_dataset=dataset["test"],
         data_collator=data_collator,
+        optimizers=(optimizer, None),
     )
     trainer.train()
 

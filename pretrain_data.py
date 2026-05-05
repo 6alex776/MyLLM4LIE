@@ -14,30 +14,37 @@ except ImportError:
 
 from datasets import Dataset, concatenate_datasets, load_dataset
 
-from tokenizer_utils import load_qwen_tokenizer
+from tokenizer_utils import load_tokenizer
 
 MAX_SEQ_LEN = 512
 OUTPUT_DIR = "./artifacts/pretrain_dataset"
 
-# 这两个数据集都可以直接用 Hugging Face datasets.load_dataset() 加载。
+# 预训练数据集（中英混合，中文为主）
 PRETRAIN_DATASETS = [
-    # 中文核心语料 (占比约80%)
+    # 中文维基百科 + 书籍 (占比约 60%)
     {
         "path": "yuhuanstudio/wikipedia-pretrain-zh",
-        "split": "train[:50%]",  # 如果你的116M模型需要控制数据总量，可以限制比例
-        "fields": ["title", "text"],  # 注意：CCI3.0-HQ的文本字段名是 "text"
+        "split": "train[:80%]",
+        "fields": ["title", "text"],
     },
-    # 英文核心语料 (占比约17%)
+    # 中文新闻语料 (占比约 20%)
+    {
+        "path": "cc100",
+        "name": "zh",
+        "split": "train[:5%]",
+        "fields": ["text"],
+    },
+    # 英文核心语料 (占比约 18%)
     {
         "path": "Salesforce/wikitext",
         "name": "wikitext-2-raw-v1",
         "split": "train",
         "fields": ["text"],
     },
-    # 少量中文对话数据，增加指令多样性 (占比<1%)
+    # 中文对话，增加语言多样性 (占比约 2%)
     {
         "path": "BelleGroup/train_0.5M_CN",
-        "split": "train[:5%]",
+        "split": "train[:15%]",
         "fields": ["instruction", "output"],
     },
 ]
@@ -83,7 +90,7 @@ def tokenize_and_chunk(dataset: Dataset, tokenizer) -> Dataset:
 
 
 def main():
-    tokenizer, tokenizer_source = load_qwen_tokenizer()
+    tokenizer, tokenizer_source = load_tokenizer()
 
     datasets = [load_source_dataset(spec) for spec in PRETRAIN_DATASETS]
     merged_dataset = concatenate_datasets(datasets).shuffle(seed=42)

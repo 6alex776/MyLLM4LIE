@@ -4,7 +4,7 @@ from typing import Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoTokenizer, GenerationMixin, PreTrainedModel, PretrainedConfig
+from transformers import GenerationMixin, PreTrainedModel, PretrainedConfig
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 
 try:
@@ -35,6 +35,9 @@ class LLMIEConfig(PretrainedConfig):
         eos_token_id: Optional[int] = None,
         tie_word_embeddings: bool = True,
         use_cache: bool = False,
+        # ========== 注意力残差配置 ==========
+        use_attention_residual: bool = True,  # 是否启用跨层注意力残差
+        attention_residual_alpha: float = 0.3,  # 残差连接权重（0~1，越大深层越依赖浅层）
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -48,6 +51,9 @@ class LLMIEConfig(PretrainedConfig):
         self.rope_theta = rope_theta
         self.initializer_range = initializer_range
         self.use_cache = use_cache
+        # 注意力残差配置
+        self.use_attention_residual = use_attention_residual
+        self.attention_residual_alpha = attention_residual_alpha
         super().__init__(
             pad_token_id=pad_token_id,
             bos_token_id=bos_token_id,
@@ -187,24 +193,42 @@ class LLMIEMLP(nn.Module):
 
 
 class LLMIEDecoderLayer(nn.Module):
-    def __init__(self, config: LLMIEConfig):
+    def __init__(self, config: LLMIEConfig, layer_idx: int = 0):
         super().__init__()
+        self.layer_idx = layer_idx
         self.self_attn = LLMIESelfAttention(config)
         self.mlp = LLMIEMLP(config)
         self.input_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
+        # 注意力残差：深层可以访问浅层的注意力输出
+        self.use_attention_residual = config.use_attention_residual
+        if self.use_attention_residual and layer_idx > 0:
+            # 投影层：将当前层输入投影到与残差相同的维度
+            self.residual_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.Tensor] = None,
+        shallow_hidden: Optional[torch.Tensor] = None,  # 来自浅层的隐藏状态
     ) -> torch.Tensor:
+        # ========== 注意力子层 ==========
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.self_attn(hidden_states, attention_mask=attention_mask, position_ids=position_ids)
-        hidden_states = residual + hidden_states
+        attn_output = self.self_attn(hidden_states, attention_mask=attention_mask, position_ids=position_ids)
+        
+        # 注意力残差：深层添加来自浅层的注意力信息
+        if self.use_attention_residual and self.layer_idx > 0 and shallow_hidden is not None:
+            # 将浅层信息投影后加权融合
+            shallow_contrib = self.residual_proj(shallow_hidden)
+            # 使用配置中的 alpha 权重融合（默认 0.3）
+            alpha_val = getattr(self, '_residual_alpha', 0.3)
+            attn_output = attn_output + alpha_val * shallow_contrib
+        
+        hidden_states = residual + attn_output
 
+        # ========== MLP 子层 ==========
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
@@ -230,9 +254,14 @@ class LLMIEModel(LLMIEPreTrainedModel):
     def __init__(self, config: LLMIEConfig):
         super().__init__(config)
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.layers = nn.ModuleList([LLMIEDecoderLayer(config) for _ in range(config.num_hidden_layers)])
+        self.layers = nn.ModuleList([LLMIEDecoderLayer(config, layer_idx=i) for i in range(config.num_hidden_layers)])
         self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.gradient_checkpointing = False
+        self.use_attention_residual = config.use_attention_residual
+        self.attention_residual_alpha = config.attention_residual_alpha
+        # 为每一层设置残差 alpha（可以逐层调整，这里统一设置）
+        for layer in self.layers:
+            layer._residual_alpha = config.attention_residual_alpha
         self.post_init()
 
     def forward(
@@ -260,17 +289,32 @@ class LLMIEModel(LLMIEPreTrainedModel):
             device = hidden_states.device
             position_ids = torch.arange(seq_len, device=device).unsqueeze(0).expand(batch_size, -1)
 
-        for layer in self.layers:
+        # 注意力残差：记录每隔几层的 hidden_states 作为浅层参考
+        # 策略：每 3 层保存一个 shallow_hidden，供后续深层使用
+        shallow_hidden = None
+        shallow_interval = max(1, len(self.layers) // 4)  # 约每 1/4 层保存一次
+
+        for layer_idx, layer in enumerate(self.layers):
+            # 在特定层保存 shallow_hidden
+            if self.use_attention_residual and layer_idx % shallow_interval == 0:
+                shallow_hidden = hidden_states.detach()  # detach 避免梯度回传太远
+
             if self.gradient_checkpointing and self.training:
                 hidden_states = torch.utils.checkpoint.checkpoint(
                     layer,
                     hidden_states,
                     attention_mask,
                     position_ids,
+                    shallow_hidden if layer_idx > 0 else None,
                     use_reentrant=False,
                 )
             else:
-                hidden_states = layer(hidden_states, attention_mask=attention_mask, position_ids=position_ids)
+                hidden_states = layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    shallow_hidden=shallow_hidden if layer_idx > 0 else None,
+                )
 
         hidden_states = self.norm(hidden_states)
 
@@ -357,13 +401,14 @@ class LLMIEForCausalLM(LLMIEPreTrainedModel, GenerationMixin):
 
 
 def build_student_config(tokenizer) -> LLMIEConfig:
+    """构建 ~191M 学生模型配置：hidden=768, intermediate=4096, 12层, ChatGLM3 ~64K 词表"""
     return LLMIEConfig(
         vocab_size=len(tokenizer),
-        hidden_size=512,
-        intermediate_size=1536,
+        hidden_size=768,                  # 从 512 升级到 768
+        intermediate_size=4096,           # 从 1536 升级到 4096
         num_hidden_layers=12,
-        num_attention_heads=8,
-        num_key_value_heads=8,
+        num_attention_heads=12,           # 768/12 = 64 head_dim
+        num_key_value_heads=12,
         max_position_embeddings=1024,
         rms_norm_eps=1e-6,
         rope_theta=10000.0,
@@ -387,9 +432,8 @@ def get_model_stats(model: nn.Module) -> ModelStats:
 
 
 if __name__ == "__main__":
-    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen-tokenizer", trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    from tokenizer_utils import load_tokenizer
+    tokenizer, _ = load_tokenizer()
 
     config = build_student_config(tokenizer)
     model = LLMIEForCausalLM(config)

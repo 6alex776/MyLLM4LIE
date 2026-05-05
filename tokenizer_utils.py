@@ -8,10 +8,9 @@ CHATGLM3_REMOTE_NAME = "THUDM/chatglm3-6b"
 QWEN_LOCAL_DIR = Path("./artifacts/tokenizer/Qwen-tokenizer")
 QWEN_REMOTE_NAME = "Qwen/Qwen-tokenizer"
 
-# 当前使用的分词器：Qwen（词表 151K，与现有底座模型匹配）
-# 如需切换为 ChatGLM3：改为 LOCAL_TOKENIZER_DIR = CHATGLM3_LOCAL_DIR，并重新训练底座模型#TODO
-LOCAL_TOKENIZER_DIR = QWEN_LOCAL_DIR
-REMOTE_TOKENIZER_NAME = QWEN_REMOTE_NAME
+# 当前使用的分词器：ChatGLM3（词表 ~64K，中文效率高，lm_head 仅 33M → 49M）
+LOCAL_TOKENIZER_DIR = CHATGLM3_LOCAL_DIR
+REMOTE_TOKENIZER_NAME = CHATGLM3_REMOTE_NAME
 
 
 def resolve_tokenizer_source() -> str:
