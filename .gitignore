@@ -41,6 +41,7 @@ conda_env/
 # 你的 artifacts 目录（模型、数据、日志全在这，体积极大，必须忽略）
 artifacts/
 datasets/
+
 # 模型权重/检查点文件（防止大文件提交）
 *.pt
 *.pth
@@ -91,3 +92,21 @@ desktop.ini
 *.out
 *.err
 .ipynb_checkpoints/
+
+# ======================================
+# 6. 项目特定忽略项
+# ======================================
+# 本地分词器缓存（可从 HuggingFace 重新下载）
+artifacts/tokenizer/
+
+# 进度文件（运行中生成）
+*.tmp
+*.progress
+
+# 失败样本记录
+failed_samples.jsonl
+
+# HuggingFace 缓存（可选，通常很大）
+# .cache/
+dataset_infos.json
+IWSLT-English-to-Chinese-Machine-Translation-Spoken.json
