@@ -14,7 +14,11 @@ except ImportError:
 
 from datasets import Dataset, concatenate_datasets, load_dataset
 
-from tokenizer_utils import load_tokenizer
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.tokenizer import load_tokenizer
 
 MAX_SEQ_LEN = 512
 OUTPUT_DIR = "./artifacts/pretrain_dataset"

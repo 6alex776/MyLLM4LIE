@@ -15,9 +15,13 @@ from datasets import load_dataset
 from peft import LoraConfig, get_peft_model, TaskType
 from transformers import Trainer, TrainingArguments, DataCollatorForSeq2Seq
 
-from my_model import LLMIEForCausalLM, get_model_stats  # 自定义底座模型
-from tokenizer_utils import load_tokenizer
-from muon_optimizer import create_optimizer
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.model import LLMIEForCausalLM, get_model_stats
+from src.tokenizer import load_tokenizer
+from src.optimizer import create_optimizer
 
 
 BASE_MODEL_DIR = "./artifacts/base_model"          # 预训练底座模型

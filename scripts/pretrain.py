@@ -16,9 +16,12 @@ torch.backends.cudnn.allow_tf32 = True        # 启用 cuDNN TF32 加速
 from datasets import load_from_disk, load_dataset, concatenate_datasets
 from transformers import Trainer, TrainingArguments
 
-from my_model import LLMIEForCausalLM, build_student_config, get_model_stats
-from tokenizer_utils import load_tokenizer
-from muon_optimizer import create_optimizer
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.model import LLMIEForCausalLM, build_student_config, get_model_stats
+from src.tokenizer import load_tokenizer
+from src.optimizer import create_optimizer
 
 
 DATASET_DIR = "./artifacts/pretrain_dataset"

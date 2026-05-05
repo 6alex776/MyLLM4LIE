@@ -5,7 +5,11 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 import torch
 from transformers import AutoTokenizer
 
-from my_model import LLMIEForCausalLM  # 自定义模型必须直接导入
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.model import LLMIEForCausalLM
 
 MODEL_PATH = "./artifacts/sft_model"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

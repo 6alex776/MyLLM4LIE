@@ -2,8 +2,12 @@ from pathlib import Path
 
 from transformers import LlamaConfig, LlamaForCausalLM
 
-from my_model import LLMIEForCausalLM
-from tokenizer_utils import load_qwen_tokenizer
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.model import LLMIEForCausalLM
+from src.tokenizer import load_qwen_tokenizer
 
 
 SOURCE_MODEL_DIR = "./artifacts/final_student_model"

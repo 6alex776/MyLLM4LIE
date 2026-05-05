@@ -29,18 +29,28 @@
 
 ```
 MyLLM4LIE/
-├── my_model.py              # 模型架构定义（含注意力残差）
-├── muon_optimizer.py        # Muon + AdamW 混合优化器
-├── tokenizer_utils.py       # 分词器加载工具
+├── README.md
+├── LICENSE
+├── .gitignore
 │
-├── pretrain.py              # 预训练脚本（支持 HuggingFace 数据集）
-├── pretrain_data.py         # 预训练数据预处理
+├── src/                          # 核心代码
+│   ├── __init__.py
+│   ├── model.py                  # 模型架构（LLaMA 风格 + 注意力残差）
+│   ├── tokenizer.py              # 分词器加载工具
+│   └── optimizer.py              # Muon + AdamW 混合优化器
 │
-├── distill_data_gen.py      # 蒸馏数据生成（5 大任务）
-├── distill_train.py         # LoRA 指令微调（支持 Muon）
+├── scripts/                      # 可执行脚本
+│   ├── pretrain.py               # 预训练（支持 HuggingFace 数据集）
+│   ├── distill_data_gen.py       # 蒸馏数据生成（5 大任务）
+│   ├── distill_train.py          # LoRA 指令微调
+│   ├── export_to_hf.py           # 导出为 HuggingFace LLaMA 格式
+│   └── test.py                   # 模型测试
 │
-├── export_to_hf_llama.py    # 导出为 HuggingFace LLaMA 格式
-└── test.py                  # 模型测试脚本
+├── data/                         # 数据处理
+│   ├── __init__.py
+│   └── pretrain_data.py          # 预训练数据预处理
+│
+└── configs/                      # 配置文件（可选）
 ```
 
 ## 训练流程
@@ -153,4 +163,4 @@ TASK_SAMPLE_LIMITS = {
 
 ## License
 
-MIT
+Apache License 2.0 - 详见 [LICENSE](LICENSE) 文件
