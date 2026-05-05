@@ -41,14 +41,11 @@ MyLLM4LIE/
 │
 ├── scripts/                      # 可执行脚本
 │   ├── pretrain.py               # 预训练（支持 HuggingFace 数据集）
+│   ├── pretrain_data.py          # 预训练数据预处理
 │   ├── distill_data_gen.py       # 蒸馏数据生成（5 大任务）
 │   ├── distill_train.py          # LoRA 指令微调
 │   ├── export_to_hf.py           # 导出为 HuggingFace LLaMA 格式
 │   └── test.py                   # 模型测试
-│
-├── data/                         # 数据处理
-│   ├── __init__.py
-│   └── pretrain_data.py          # 预训练数据预处理
 │
 └── configs/                      # 配置文件（可选）
 ```

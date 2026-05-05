@@ -108,5 +108,3 @@ failed_samples.jsonl
 
 # HuggingFace 缓存（可选，通常很大）
 # .cache/
-dataset_infos.json
-IWSLT-English-to-Chinese-Machine-Translation-Spoken.json
